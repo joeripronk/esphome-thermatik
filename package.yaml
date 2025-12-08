@@ -75,6 +75,13 @@ globals:
           {"cRefillStatus", {0x8C, 0x1E}},
           {"cAirSliderAutoManual", {0xEC, 0x1D}},
           {"_bDoorOpen", {0x7C, 0x1E}}
+        },
+        {
+          {"cAirSliderPercentage", {0x62, 0x1E}},
+          {"cAirSliderInitialized", {0x64, 0x1E}},
+          {"unknown2", {0xCE, 0x1C}},
+          {"unknown3", {0xD4, 0x1C}},
+          {"BoardTemp", {0x98, 0x1D}}
         }
       }
 
@@ -175,7 +182,7 @@ script:
   - id: pool_batch_all
     then:
       - repeat:
-          count: 2 # Number of batches
+          count: 3 # Number of batches
           then:
             - delay: 200ms # Small window for user input
             - wait_until:
@@ -389,17 +396,11 @@ sensor:
     id: cSensorError
     name: "cSensorError"
     accuracy_decimals: 0
-    filters:
-      - round: 0
-      - skip_initial: 2
 
   - platform: template
     id: cRefillStatus
     name: "cRefillStatus"
     accuracy_decimals: 0
-    filters:
-      - round: 0
-      - skip_initial: 2
 
   - platform: ble_client
     type: characteristic
@@ -434,6 +435,9 @@ sensor:
           id(cRefillStatus).publish_state((x[5] << 8) | x[4]);
           id(cAirSliderAutoManual).publish_state(((x[7] << 8) | x[6]) == 1); // 0 off, 1 on
           id(_bDoorOpen).publish_state(((x[9] << 8) | x[8]) == 1); // 0 closed, 1 open
+          break;
+        case 2:
+          id(cAirSliderPercentage).publish_state((x[1] << 8) | x[0]);
           break;
         default:
           ESP_LOGD("mode", "Unknown current_batch %d", id(current_batch));
