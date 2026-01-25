@@ -323,6 +323,7 @@ number:
               ESP_LOGW("main", "Manual mode not enabled");
               id(cAirSliderPercentage).publish_state(0);
             }
+
 binary_sensor:
   - platform: template
     id: _bDoorOpen
