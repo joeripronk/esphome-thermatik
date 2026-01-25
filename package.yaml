@@ -328,11 +328,9 @@ binary_sensor:
     id: _bDoorOpen
     device_class: door
     name: "_bDoorOpen"
-  - platform: template
     id: _bDoorSw1
     device_class: door
     name: "_bDoorSw1"
-  - platform: template
     id: _bDoorSw2
     device_class: door
     name: "_bDoorSw2"
