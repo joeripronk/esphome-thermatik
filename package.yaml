@@ -86,7 +86,7 @@ globals:
           {"cAirSliderPercentage", {0x62, 0x1E}},
           {"cAirSliderInitialized", {0x64, 0x1E}},
           {"_bDoorSw1", {0x40, 0x1E}},
-          {"_bDoorSw1", {0x42, 0x1E}},
+          {"cSezam", {0xCA, 0x1E}},
           {"BoardTemp", {0x98, 0x1D}}
         }
       }
@@ -128,6 +128,12 @@ button:
     internal: True
     id: restart_button
     name: "Restart ESP"
+  - platform: template
+    name: "Door Remote"
+    on_press:
+      - lambda: |-
+          ESP_LOGD("ble", "Triggered Door");
+          id(write_user_input)->execute({0xCA, 0x1E},{0x01, 0x00});
 
 script:
   - id: write_user_input
@@ -288,7 +294,7 @@ select:
             // Increase by 1, since server accepts only 1, 2 and 3 as input
             raw_value = raw_value + 1;
 
-            id(write_user_input)->execute({0xBE, 0x1C},{(uint8_t)raw_value, 0x00});
+            id(write_user_input)->execute({0x5C, 0x1C},{(uint8_t)raw_value, 0x00});
           } else {
             ESP_LOGE("main", "Undefined state. WTF?");
           }
@@ -329,18 +335,23 @@ binary_sensor:
     id: _bDoorOpen
     device_class: door
     name: "_bDoorOpen"
-    id: _bDoorSw1
-    device_class: door
-    name: "_bDoorSw1"
-    id: _bDoorSw2
-    device_class: door
-    name: "_bDoorSw2"
-
     
 sensor:
   - platform: template
     id: cAmbientTemp
     name: "Ambient temperature"
+    icon: "mdi:thermometer"
+    device_class: "temperature"
+    state_class: "measurement"
+    unit_of_measurement: "°C"
+    accuracy_decimals: 0
+    filters:
+      - round: 0
+      - skip_initial: 2
+
+  - platform: template
+    id: BoardTemp
+    name: "Board temperature"
     icon: "mdi:thermometer"
     device_class: "temperature"
     state_class: "measurement"
@@ -469,8 +480,7 @@ sensor:
           break;
         case 2:
           id(cAirSliderPercentage).publish_state((x[1] << 8) | x[0]);
-          id(_bDoorSw1).publish_state(((x[5] << 8) | x[4]) == 1);
-          id(_bDoorSw2).publish_state(((x[7] << 8) | x[6]) == 1);
+          id(BoardTemp).publish_state((x[9] << 8) | x[8]);
           break;
         default:
           ESP_LOGD("mode", "Unknown current_batch %d", id(current_batch));
