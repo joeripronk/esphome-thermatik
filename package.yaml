@@ -85,8 +85,8 @@ globals:
         {
           {"cAirSliderPercentage", {0x62, 0x1E}},
           {"cAirSliderInitialized", {0x64, 0x1E}},
-          {"unknown2", {0xCE, 0x1C}},
-          {"unknown3", {0xD4, 0x1C}},
+          {"_bDoorSw1", {0x40, 0x1E}},
+          {"_bDoorSw1", {0x42, 0x1E}},
           {"BoardTemp", {0x98, 0x1D}}
         }
       }
@@ -329,6 +329,19 @@ binary_sensor:
     device_class: door
     name: "_bDoorOpen"
 
+binary_sensor:
+  - platform: template
+    id: _bDoorSw1
+    device_class: door
+    name: "_bDoorSw1"
+
+binary_sensor:
+  - platform: template
+    id: _bDoorSw2
+    device_class: door
+    name: "_bDoorSw2"
+
+    
 sensor:
   - platform: template
     id: cAmbientTemp
@@ -461,6 +474,8 @@ sensor:
           break;
         case 2:
           id(cAirSliderPercentage).publish_state((x[1] << 8) | x[0]);
+          id(_bDoorSw1).publish_state(((x[5] << 8) | x[4]) == 1);
+          id(_bDoorSw2).publish_state(((x[7] << 8) | x[6]) == 1);
           break;
         default:
           ESP_LOGD("mode", "Unknown current_batch %d", id(current_batch));
