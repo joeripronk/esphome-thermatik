@@ -111,14 +111,33 @@ interval:
           }
 
   - interval: 30s
-    startup_delay: 5s
     then:
       - script.execute: pool_batch_all
+
+cover:
+  - platform: template
+    id: sezam
+    name: "Sezam"
+    device_class: garage
+    optimistic: false
+    open_action:
+      - lambda: |-
+          ESP_LOGD("ble", "Triggered Open Door");
+          id(write_user_input)->execute({0xCA, 0x1E},{0x01, 0x00});
+          id(sezam).current_operation=COVER_OPERATION_OPENING;
+          id(sezam).publish_state();
+    close_action:
+      - lambda: |-
+          ESP_LOGD("ble", "Triggered Close Door");
+          id(write_user_input)->execute({0xCA, 0x1E},{0x01, 0x00});
+          id(sezam).current_operation=COVER_OPERATION_CLOSING;
+          id(sezam).publish_state();
 
 button:
   - platform: template
     name: "Reboot BLE"
     device_class: restart # makes it behave like the restart button
+    disabled_by_default: true
     on_press:
       - lambda: id(my_ble_device).set_auto_connect(false); // disable auto connect
       - ble_client.disconnect: my_ble_device
@@ -132,6 +151,7 @@ button:
   - platform: template
     name: "Door Remote"
     icon: "mdi:fireplace-off"
+    disabled_by_default: true
     on_press:
       - lambda: |-
           ESP_LOGD("ble", "Triggered Door");
@@ -270,6 +290,7 @@ script:
 text_sensor:
   - platform: template
     id: cControllerStatusText
+    icon: "mdi:fireplace"
     name: "Status"
 
   - platform: template
@@ -395,63 +416,25 @@ sensor:
   - platform: template
     id: cControllerStatus
     name: "Status Code"
+    disabled_by_default: true
     accuracy_decimals: 0
     filters:
       - round: 0
       - skip_initial: 2
-    on_value:
-      then:
-        - lambda: |-
-            std::string value = "Unknown";
-            if (x == 0) {
-              value = "Standby";
-            } else if (x == 1) {
-              value = "Ignition";
-            } else if (x == 2) {
-              value = "Rising";
-            } else if (x == 3) {
-              value = "Falling";
-            } else if (x == 4) {
-              value = "Refill";
-            } else if (x == 5) {
-              value = "Glowing";
-            } else if (x == 6) {
-              value = "Chamber Flush";
-            } else if (x == 7) {
-              value = "No ignition";
-            } else if (x == 8) {
-              value = "Reducing glow";
-            } else if (x == 9) {
-              value = "Overheated";
-            }
-
-            id(cControllerStatusText).publish_state(value);
 
   - platform: template
     id: cMotorError
+    disabled_by_default: true
     name: "Motor Status Code"
     icon: "mdi:engine"
     accuracy_decimals: 0
     filters:
       - round: 0
       - skip_initial: 2
-    on_value:
-      then:
-        - lambda: |-
-            std::string value = "Unknown";
-
-            if (x == 0) {
-              value = "OK";
-            } else if (x == 20) {
-              value = "Motor circuit open";
-            } else if (x == 128) {
-              value = "Air slider OK";
-            }
-
-            id(cMotorErrorText).publish_state(value);
 
   - platform: template
     id: cSensorError
+    disabled_by_default: true
     name: "Sensor Error Count"
     accuracy_decimals: 0
 
@@ -467,6 +450,7 @@ sensor:
     update_interval: never
     lambda: |-
       std::string hex;
+      std::string value;
       for (auto b : x) {
         char buf[10];
         sprintf(buf, "%02X ", b);
@@ -480,14 +464,64 @@ sensor:
           id(vTcTemp1).publish_state((x[3] << 8) | x[2]);
           id(cPowerIcon).publish_state(((x[5] << 8) | x[4]) - 1); // Values are 1, 2 and 3. Start with 0 so we can work with index
           id(cControllerStatus).publish_state((x[7] << 8) | x[6]);
+          value = "Unknown";
+          if (x[6] == 0) {
+            value = "Standby";
+          } else if (x[6] == 1) {
+            value = "Ignition";
+          } else if (x[6] == 2) {
+            value = "Rising";
+          } else if (x[6] == 3) {
+            value = "Falling";
+          } else if (x[6] == 4) {
+            value = "Refill";
+          } else if (x[6] == 5) {
+            value = "Glowing";
+          } else if (x[6] == 6) {
+            value = "Chamber Flush";
+          } else if (x[6] == 7) {
+            value = "No ignition";
+          } else if (x[7] == 8) {
+            value = "Reducing glow";
+          } else if (x[8] == 9) {
+            value = "Overheated"; // this one is swapped with Reducing glow(8) in the apk resource
+          }
+          id(cControllerStatusText).publish_state(value);
+
           id(cAirSlider).publish_state((x[9] << 8) | x[8]);
           break;
         case 1:
           id(cMotorError).publish_state((x[1] << 8) | x[0]);
+          value = "Unknown";
+          if (x[0] == 0) {
+            value = "OK";
+          } else if (x[0] == 16) { // wild guess
+            value = "Motor blocked";
+          } else if (x[0] == 20) {
+            value = "Motor circuit open";
+          } else if (x[0] == 64) {
+            value = "Air slider failure"; // wild guess
+          } else if (x[0] == 128) {
+            value = "Air slider OK";
+          }
+          id(cMotorErrorText).publish_state(value);
           id(cSensorError).publish_state((x[3] << 8) | x[2]);
           id(cRefillStatus).publish_state(((x[5] << 8) | x[4])==1);
           id(cAirSliderAutoManual).publish_state(((x[7] << 8) | x[6]) == 1); // 0 off, 1 on
           id(_bDoorOpen).publish_state(((x[9] << 8) | x[8]) == 1); // 0 closed, 1 open
+          if (((x[9] << 8) | x[8]) == 1) {
+            if (id(sezam).position!=COVER_OPEN) {
+              id(sezam).current_operation=COVER_OPERATION_IDLE;
+              id(sezam).position=COVER_OPEN;
+              id(sezam).publish_state();
+            }
+          } else {
+            if (id(sezam).position!=COVER_CLOSED) {
+              id(sezam).current_operation=COVER_OPERATION_IDLE;
+              id(sezam).position=COVER_CLOSED;
+              id(sezam).publish_state();
+            }
+          }
           break;
         case 2:
           id(cAirSliderPercentage).publish_state((x[1] << 8) | x[0]);
