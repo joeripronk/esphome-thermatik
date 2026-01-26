@@ -110,7 +110,7 @@ interval:
             ESP_LOGI("ble_watchdog", "BLE watchdog OK (diff=%u s)", diff);
           }
 
-  - interval: 1s
+  - interval: 30s
     then:
       - script.execute: pool_batch_all
 
