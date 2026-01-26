@@ -111,6 +111,7 @@ interval:
           }
 
   - interval: 30s
+    startup_delay: 5s
     then:
       - script.execute: pool_batch_all
 
@@ -130,6 +131,7 @@ button:
     name: "Restart ESP"
   - platform: template
     name: "Door Remote"
+    icon: "mdi:fireplace-off"
     on_press:
       - lambda: |-
           ESP_LOGD("ble", "Triggered Door");
@@ -268,21 +270,22 @@ script:
 text_sensor:
   - platform: template
     id: cControllerStatusText
-    name: "Status Text"
+    name: "Status"
 
   - platform: template
     id: cMotorErrorText
-    name: "cMotorError Text"
+    icon: "mdi:engine"
+    name: "Motor Status"
 
 select:
   - platform: template
     id: cPowerIcon
-    name: "Power state"
+    name: "Heating"
+    icon: "mdi:fire"
     options:
       - "Low"
       - "Mid"
       - "High"
-    initial_option: "Low"
     optimistic: true
     set_action:
       - lambda: |-
@@ -319,6 +322,7 @@ number:
     max_value: 100
     step: 1
     unit_of_measurement: "%"
+    icon: "mdi:fan-alert"
     set_action:
       then:
         - lambda: |-
@@ -334,7 +338,11 @@ binary_sensor:
   - platform: template
     id: _bDoorOpen
     device_class: door
-    name: "_bDoorOpen"
+    name: "Door"
+  - platform: template
+    id: cRefillStatus
+    icon: "mdi:login-variant"
+    name: "Refill"
     
 sensor:
   - platform: template
@@ -363,7 +371,7 @@ sensor:
 
   - platform: template
     id: vTcTemp1
-    name: "Stove temperature"
+    name: "Exhaust temperature"
     icon: "mdi:fire"
     device_class: "temperature"
     state_class: "measurement"
@@ -386,7 +394,7 @@ sensor:
 
   - platform: template
     id: cControllerStatus
-    name: "Status"
+    name: "Status Code"
     accuracy_decimals: 0
     filters:
       - round: 0
@@ -395,7 +403,6 @@ sensor:
       then:
         - lambda: |-
             std::string value = "Unknown";
-
             if (x == 0) {
               value = "Standby";
             } else if (x == 1) {
@@ -408,13 +415,22 @@ sensor:
               value = "Refill";
             } else if (x == 5) {
               value = "Glowing";
+            } else if (x == 6) {
+              value = "Chamber Flush";
+            } else if (x == 7) {
+              value = "No ignition";
+            } else if (x == 8) {
+              value = "Reducing glow";
+            } else if (x == 9) {
+              value = "Overheated";
             }
 
             id(cControllerStatusText).publish_state(value);
 
   - platform: template
     id: cMotorError
-    name: "cMotorError"
+    name: "Motor Status Code"
+    icon: "mdi:engine"
     accuracy_decimals: 0
     filters:
       - round: 0
@@ -436,13 +452,9 @@ sensor:
 
   - platform: template
     id: cSensorError
-    name: "cSensorError"
+    name: "Sensor Error Count"
     accuracy_decimals: 0
 
-  - platform: template
-    id: cRefillStatus
-    name: "cRefillStatus"
-    accuracy_decimals: 0
 
   - platform: ble_client
     type: characteristic
@@ -460,8 +472,7 @@ sensor:
         sprintf(buf, "%02X ", b);
         hex += buf;
       }
-      ESP_LOGD("ble", "RX data (%d bytes): %s", x.size(), hex.c_str());
-
+      ESP_LOGD("ble", "RX data[%d] (%d bytes): %s", id(current_batch), x.size(), hex.c_str());
 
       switch (id(current_batch)) {
         case 0:
@@ -474,7 +485,7 @@ sensor:
         case 1:
           id(cMotorError).publish_state((x[1] << 8) | x[0]);
           id(cSensorError).publish_state((x[3] << 8) | x[2]);
-          id(cRefillStatus).publish_state((x[5] << 8) | x[4]);
+          id(cRefillStatus).publish_state(((x[5] << 8) | x[4])==1);
           id(cAirSliderAutoManual).publish_state(((x[7] << 8) | x[6]) == 1); // 0 off, 1 on
           id(_bDoorOpen).publish_state(((x[9] << 8) | x[8]) == 1); // 0 closed, 1 open
           break;
