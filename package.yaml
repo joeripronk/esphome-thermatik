@@ -481,9 +481,9 @@ sensor:
             value = "Chamber Flush";
           } else if (x[6] == 7) {
             value = "No ignition";
-          } else if (x[7] == 8) {
+          } else if (x[6] == 8) {
             value = "Reducing glow";
-          } else if (x[8] == 9) {
+          } else if (x[6] == 9) {
             value = "Overheated"; // this one is swapped with Reducing glow(8) in the apk resource
           }
           id(cControllerStatusText).publish_state(value);
