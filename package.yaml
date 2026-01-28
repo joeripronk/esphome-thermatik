@@ -10,12 +10,13 @@ substitutions:
 
 # Enable logging
 logger:
-  # level: VERY_VERBOSE
+#  level: VERY_VERBOSE
+#  level: INFO
   logs:
-    script: ERROR
-    # esp32_ble_client: DEBUG
-    # esp32_ble: VERY_VERBOSE
-    # esp32_ble_tracker: INFO
+    script: DEBUG
+#    esp32_ble_client: DEBUG
+#    esp32_ble: VERY_VERBOSE
+#    esp32_ble_tracker: INFO
 
 esp32_ble:
   io_capability: keyboard_display
@@ -29,6 +30,7 @@ ble_client:
         - lambda: |-
             ESP_LOGD("ble_client_lambda", "Connected to BLE device");
             id(my_ble_device)->pair();
+            id(connected)=true;
     on_passkey_request:
       then:
         - lambda: |-
@@ -40,6 +42,7 @@ ble_client:
       then:
         - lambda: |-
             ESP_LOGD("ble_client_lambda", "Disconnected from BLE device");
+            id(connected)=false;
 
 # Between writes and reads, we need to store which batch we actually waiting
 
@@ -49,11 +52,22 @@ globals:
     restore_value: no
     initial_value: "0"
 
+  - id: connected
+    type: bool
+    initial_value: "false"
+
+  - id: powerIcon_update
+    type: bool
+    initial_value: "false"
+
   - id: current_batch
     type: int
-    initial_value: "0"
+    initial_value: "3"
 
   - id: current_tx_buffer
+    type: std::vector<uint8_t>
+
+  - id: last_data
     type: std::vector<uint8_t>
 
   - id: is_polling_data
@@ -77,24 +91,24 @@ globals:
         },
         {
           {"cMotorError", {0x2A, 0x1E}},
-          {"cSensorError", {0x4E, 0x1D}},
-          {"cRefillStatus", {0x8C, 0x1E}},
+          {"BoardTemp", {0x98, 0x1D}},
+          {"cAirSliderPercentage", {0x62, 0x1E}},
           {"cAirSliderAutoManual", {0xEC, 0x1D}},
           {"_bDoorOpen", {0x7C, 0x1E}}
         },
         {
-          {"cAirSliderPercentage", {0x62, 0x1E}},
-          {"cAirSliderInitialized", {0x64, 0x1E}},
-          {"_bDoorSw1", {0x40, 0x1E}},
-          {"cSezam", {0xCA, 0x1E}},
-          {"BoardTemp", {0x98, 0x1D}}
+          {"cRefillStatus", {0x8C, 0x1E}},
+          {"cSensorError", {0x4E, 0x1D}},
+          {"BoardTemp", {0x98, 0x1D}},
+          {"cPowerIcon", {0xBE, 0x1C}},
+          {"_bDoorOpen", {0x7C, 0x1E}}
         }
       }
 
 # Main trigger
 interval:
   - interval: 3min
-    startup_delay: 2min
+    startup_delay: 5min
     then:
       - lambda: |-
           uint32_t now = millis() / 1000;
@@ -111,6 +125,7 @@ interval:
           }
 
   - interval: 30s
+    startup_delay: 30s
     then:
       - script.execute: pool_batch_all
 
@@ -170,7 +185,7 @@ script:
 
       - wait_until:
           condition:
-            lambda: "return ! id(is_polling_data);"
+            lambda: "return id(connected) && ! id(is_polling_data);"
 
       - ble_client.ble_write:
           id: my_ble_device
@@ -188,7 +203,7 @@ script:
             ESP_LOGD("ble", "TX address (%d bytes): %s", tx_buffer.size(), hex.c_str());
 
             return tx_buffer;
-      - delay: 2s
+      - delay: 200ms
       - ble_client.ble_write:
           id: my_ble_device
           service_uuid: ${MAIN_SERVICE}
@@ -205,9 +220,11 @@ script:
             ESP_LOGD("ble", "TX data (%d bytes): %s", tx_buffer.size(), hex.c_str());
 
             return tx_buffer;
-      - globals.set:
-          id: is_writting_data
-          value: "false"
+      - delay: 1s
+      - component.update: read_data_buffer # No user write request.
+#      - globals.set:
+#          id: is_writting_data
+#          value: "false"
 
   - id: batch_to_buffer
     parameters:
@@ -232,25 +249,34 @@ script:
 
   - id: pool_batch_all
     then:
+      - globals.set:
+          id: current_batch
+          value: "0"
       - repeat:
           count: 3 # Number of batches
           then:
-            - delay: 200ms # Small window for user input
             - wait_until:
                 condition:
-                  lambda: "return ! id(is_writting_data);"
-
+                  lambda: "return id(connected) && ! id(is_writting_data);"
+                timeout: 30s
+            - lambda: |-
+                if (!id(connected) || id(is_writting_data) || id(is_polling_data)) {
+                  ESP_LOGE("ble", "Timed out for batch[%d] %d %d %d",iteration, id(connected), id(is_writting_data), id(is_polling_data));
+                  return;
+                }
             - globals.set:
                 id: is_polling_data
                 value: "true"
+#            - delay: 200ms
             - lambda: ESP_LOGI("main", "Fetching batch %d", iteration);
             - lambda: |-
                 // Define which batch we're working with
-                id(current_batch) = iteration;
 
                 // Transform the current batch to TX info
                 id(batch_to_buffer)->execute(iteration);
 
+            - lambda: |-
+                id(current_batch) = iteration;
             - ble_client.ble_write:
                 id: my_ble_device
                 service_uuid: ${MAIN_SERVICE}
@@ -264,28 +290,25 @@ script:
                     sprintf(buf, "%02X ", b);
                     hex += buf;
                   }
-                  ESP_LOGD("ble", "TX address (%d bytes): %s", tx_buffer.size(), hex.c_str());
+                  ESP_LOGD("ble", "TX address[%d] (%d bytes): %s", iteration, tx_buffer.size(), hex.c_str());
 
                   return tx_buffer;
-
-            - wait_until:
-                condition:
-                  lambda: "return id(is_writting_data);"
-                timeout: 2s # Device take time to process. Wait meanwhile
-            - if:
-                condition:
-                  lambda: "return id(is_writting_data);"
-                then:
-                  - logger.log: "User requested write data. Cancelling poll"
-                  - globals.set:
-                      id: is_polling_data
-                      value: "false"
-                else:
-                  - component.update: read_data_buffer # No user write request.
-
+            - delay: 1s
+            - component.update: read_data_buffer # No user write request.
             - wait_until:
                 condition:
                   lambda: "return ! id(is_polling_data);"
+                timeout: 15s
+            - lambda: |-
+               if (id(is_polling_data)) {
+                 ESP_LOGE("ble", "poll not done in 15s %d", id(current_batch));
+                 id(is_polling_data) = false;
+               }
+            - lambda: |-
+                ESP_LOGD("ble", "Finished poll for %d", id(current_batch));
+#            - delay: 1s
+      - lambda: |-
+          ESP_LOGD("ble", "Finished polls", id(current_batch));
 
 text_sensor:
   - platform: template
@@ -310,7 +333,7 @@ select:
     optimistic: true
     set_action:
       - lambda: |-
-          ESP_LOGD("ble", "Triggered action");
+          ESP_LOGD("ble", "Triggered set powerIcon action");
           auto index = id(cPowerIcon).index_of(x);
           if (index.has_value()) {
             int raw_value = index.value();
@@ -319,6 +342,7 @@ select:
             raw_value = raw_value + 1;
 
             id(write_user_input)->execute({0x5C, 0x1C},{(uint8_t)raw_value, 0x00});
+            id(powerIcon_update) = true;
           } else {
             ESP_LOGE("main", "Undefined state. WTF?");
           }
@@ -328,11 +352,18 @@ switch:
     id: cAirSliderAutoManual
     optimistic: true
     name: "Air Slider Manual mode"
-    on_state:
+    on_turn_on:
       - lambda: |-
-          ESP_LOGD("ble", "Triggered action");
-          uint8_t value = x ? 0x01 : 0x00;
-          id(write_user_input)->execute({0xEC, 0x1D},{value, 0x00});
+          if (id(connected)) {
+            ESP_LOGD("ble", "Turned manual slider ON");
+            id(write_user_input)->execute({0xEC, 0x1D},{{0x01}, 0x00});
+          }
+    on_turn_off:
+      - lambda: |-
+          if (id(connected)) { // when the entity is initialized, this function is triggered
+            ESP_LOGD("ble", "Turned manual slider OFF");
+            id(write_user_input)->execute({0xEC, 0x1D},{{0x00}, 0x00});
+          }
 
 # TODO: Implement a read operation
 number:
@@ -347,12 +378,12 @@ number:
     set_action:
       then:
         - lambda: |-
-            ESP_LOGD("ble", "Triggered action");
+            ESP_LOGD("ble", "Triggered airslider action");
             if (id(cAirSliderAutoManual).state) {
               id(write_user_input)->execute({0x62, 0x1E},{(uint8_t)x, 0x00});
             } else {
               ESP_LOGW("main", "Manual mode not enabled");
-              id(cAirSliderPercentage).publish_state(0);
+              //id(cAirSliderPercentage).publish_state(0);
             }
 
 binary_sensor:
@@ -438,7 +469,6 @@ sensor:
     name: "Sensor Error Count"
     accuracy_decimals: 0
 
-
   - platform: ble_client
     type: characteristic
     ble_client_id: my_ble_device
@@ -451,18 +481,51 @@ sensor:
     lambda: |-
       std::string hex;
       std::string value;
+
       for (auto b : x) {
         char buf[10];
         sprintf(buf, "%02X ", b);
         hex += buf;
       }
+
+      if (id(last_data).size()>1) {
+        if(id(last_data)==x) {
+          ESP_LOGE("ble", "received dup data[%d] (%d bytes): %s", id(current_batch), x.size(), hex.c_str());
+          return true;
+        }
+      } else {
+        if (x[0]==0 && x[1] ==0 && x[2] == 0 && x[3]==0 && x[4]==0 && x[5] ==0 && x[6]==0 && x[7]==0 && x[8]==0 && x[9]==0) {
+          ESP_LOGE("ble", "received zero data[%d] (%d bytes): %s", id(current_batch), x.size(), hex.c_str());
+          return true;
+        }
+      }
+      id(last_data)=x;
+      if (id(is_polling_data)==false) {
+        if (id(is_writting_data)==true) {
+          ESP_LOGD("ble", "received while writing data (%d bytes): %s", x.size(), hex.c_str());
+          id(is_writting_data) = false;
+          return true;
+        }
+        ESP_LOGE("ble", "received while not polling data[%d] (%d bytes): %s", id(current_batch), x.size(), hex.c_str());
+        return true;
+      }
       ESP_LOGD("ble", "RX data[%d] (%d bytes): %s", id(current_batch), x.size(), hex.c_str());
 
       switch (id(current_batch)) {
         case 0:
+          if (!id(powerIcon_update)) { // we ignore the first update after updating the value
+            if (x[4] > 0  && x[4] < 5) {
+              id(cPowerIcon).publish_state(((x[5] << 8) | x[4]) - 1); // Values are 1, 2 and 3. Start with 0 so we can work with index
+            } else {
+              ESP_LOGE("ble", "received %d for powerIcon, canceling update", x[4]);
+              break;
+            }
+          } else {
+            ESP_LOGE("ble", "skipped update for powerIcon, it was recently updated");
+            id(powerIcon_update) = false;
+          }
           id(cAmbientTemp).publish_state((x[1] << 8) | x[0]);
           id(vTcTemp1).publish_state((x[3] << 8) | x[2]);
-          id(cPowerIcon).publish_state(((x[5] << 8) | x[4]) - 1); // Values are 1, 2 and 3. Start with 0 so we can work with index
           id(cControllerStatus).publish_state((x[7] << 8) | x[6]);
           value = "Unknown";
           if (x[6] == 0) {
@@ -487,7 +550,6 @@ sensor:
             value = "Chamber flush";
           }
           id(cControllerStatusText).publish_state(value);
-
           id(cAirSlider).publish_state((x[9] << 8) | x[8]);
           break;
         case 1:
@@ -505,8 +567,8 @@ sensor:
             value = "Air slider OK";
           }
           id(cMotorErrorText).publish_state(value);
-          id(cSensorError).publish_state((x[3] << 8) | x[2]);
-          id(cRefillStatus).publish_state(((x[5] << 8) | x[4])==1);
+          id(BoardTemp).publish_state((x[3] << 8) | x[2]);
+          id(cAirSliderPercentage).publish_state((x[5] << 8) | x[4]);
           id(cAirSliderAutoManual).publish_state(((x[7] << 8) | x[6]) == 1); // 0 off, 1 on
           id(_bDoorOpen).publish_state(((x[9] << 8) | x[8]) == 1); // 0 closed, 1 open
           if (((x[9] << 8) | x[8]) == 1) {
@@ -524,11 +586,12 @@ sensor:
           }
           break;
         case 2:
-          id(cAirSliderPercentage).publish_state((x[1] << 8) | x[0]);
-          id(BoardTemp).publish_state((x[9] << 8) | x[8]);
+          id(cRefillStatus).publish_state(((x[1] << 8) | x[0])==1);
+          id(cSensorError).publish_state((x[3] << 8) | x[2]);
           break;
         default:
-          ESP_LOGD("mode", "Unknown current_batch %d", id(current_batch));
+          ESP_LOGE("mode", "Unknown current_batch %d", id(current_batch));
+          return false;
           break;
       }
 
@@ -537,4 +600,4 @@ sensor:
       id(last_ble_read) = millis() / 1000;  // seconds
       ESP_LOGD("ble_watchdog", "Updated last BLE read: %u", id(last_ble_read));
 
-      return NAN;
+      return true;
