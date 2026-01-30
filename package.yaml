@@ -56,6 +56,10 @@ globals:
     type: bool
     initial_value: "false"
 
+  - id: is_updating
+    type: bool
+    initial_value: "false"
+
   - id: powerIcon_update
     type: bool
     initial_value: "false"
@@ -70,11 +74,11 @@ globals:
   - id: last_data
     type: std::vector<uint8_t>
 
-  - id: is_polling_data
+  - id: is_polling
     type: bool
     initial_value: "false"
 
-  - id: is_writting_data
+  - id: is_writing
     type: bool
     initial_value: "false"
 
@@ -175,18 +179,35 @@ button:
 script:
   - id: write_user_input
     mode: queued
+    max_runs: 2
     parameters:
       address: std::vector<uint8_t>
       data: std::vector<uint8_t>
     then:
       - globals.set:
-          id: is_writting_data
+          id: is_writing
           value: "true"
+#      - wait_until:
+#          condition:
+#            #lambda: "return id(connected) && ! id(is_polling);"
+#            lambda: "return id(connected);"
+#          timeout: 15s
+      - lambda: |-
+          std::vector<uint8_t> tx_buffer = address;
+          std::string hex;
+          for (auto b : tx_buffer) {
+            char buf[10];
+            sprintf(buf, "%02X ", b);
+            hex += buf;
+          }
 
-      - wait_until:
-          condition:
-            lambda: "return id(connected) && ! id(is_polling_data);"
-
+          if (! id(connected)) {
+            ESP_LOGE("ble","NOT Connected, ignoring write to address (%d bytes): %s", tx_buffer.size(), hex.c_str());
+            id(write_user_input).stop();
+            return;
+          }
+          // stop the polling
+          id(pool_batch_all).stop();
       - ble_client.ble_write:
           id: my_ble_device
           service_uuid: ${MAIN_SERVICE}
@@ -220,11 +241,20 @@ script:
             ESP_LOGD("ble", "TX data (%d bytes): %s", tx_buffer.size(), hex.c_str());
 
             return tx_buffer;
+      - globals.set: # we cancel the poll results, as the write command will interfere
+          id: is_polling
+          value: "false"
       - delay: 1s
       - component.update: read_data_buffer # No user write request.
-#      - globals.set:
-#          id: is_writting_data
-#          value: "false"
+      - wait_until:
+          condition:
+            lambda: "return ! id(is_writing);"
+          timeout: 15s
+      - lambda: |-
+          ESP_LOGD("ble", "Writing command is done");
+      - globals.set:
+          id: is_writing
+          value: "false"
 
   - id: batch_to_buffer
     parameters:
@@ -251,32 +281,27 @@ script:
     then:
       - globals.set:
           id: current_batch
-          value: "0"
+          value: "42"
       - repeat:
           count: 3 # Number of batches
           then:
             - wait_until:
                 condition:
-                  lambda: "return id(connected) && ! id(is_writting_data);"
-                timeout: 30s
+                  lambda: "return id(connected) && ! id(is_writing);"
+                timeout: 5s
             - lambda: |-
-                if (!id(connected) || id(is_writting_data) || id(is_polling_data)) {
-                  ESP_LOGE("ble", "Timed out for batch[%d] %d %d %d",iteration, id(connected), id(is_writting_data), id(is_polling_data));
+                if (!id(connected) || id(is_writing)) {
+                  ESP_LOGE("ble", "Timed out for batch[%d] %d %d",iteration, id(connected), id(is_writing));
+                  id(pool_batch_all).stop();
                   return;
                 }
             - globals.set:
-                id: is_polling_data
+                id: is_polling
                 value: "true"
-#            - delay: 200ms
-            - lambda: ESP_LOGI("main", "Fetching batch %d", iteration);
             - lambda: |-
-                // Define which batch we're working with
-
+                ESP_LOGI("main", "Fetching batch %d", iteration);
                 // Transform the current batch to TX info
                 id(batch_to_buffer)->execute(iteration);
-
-            - lambda: |-
-                id(current_batch) = iteration;
             - ble_client.ble_write:
                 id: my_ble_device
                 service_uuid: ${MAIN_SERVICE}
@@ -294,21 +319,24 @@ script:
 
                   return tx_buffer;
             - delay: 1s
-            - component.update: read_data_buffer # No user write request.
+            - lambda: |-
+                id(current_batch) = iteration;
+            - component.update: read_data_buffer
             - wait_until:
                 condition:
-                  lambda: "return ! id(is_polling_data);"
+                  lambda: "return ! id(is_polling);"
                 timeout: 15s
             - lambda: |-
-               if (id(is_polling_data)) {
+               if (id(is_polling)) {
                  ESP_LOGE("ble", "poll not done in 15s %d", id(current_batch));
-                 id(is_polling_data) = false;
+                 id(is_polling) = false;
                }
             - lambda: |-
                 ESP_LOGD("ble", "Finished poll for %d", id(current_batch));
-#            - delay: 1s
+            - delay: 3s
       - lambda: |-
           ESP_LOGD("ble", "Finished polls", id(current_batch));
+          id(current_batch) = 42;
 
 text_sensor:
   - platform: template
@@ -333,6 +361,10 @@ select:
     optimistic: true
     set_action:
       - lambda: |-
+          if (id(is_updating)) {
+            ESP_LOGE("ble", "Ignored powerIcon command while updating");
+            return;
+          }
           ESP_LOGD("ble", "Triggered set powerIcon action");
           auto index = id(cPowerIcon).index_of(x);
           if (index.has_value()) {
@@ -354,12 +386,20 @@ switch:
     name: "Air Slider Manual mode"
     on_turn_on:
       - lambda: |-
+          if (id(is_updating)) {
+            ESP_LOGE("ble", "Ignored airsliderManualSwitch ON command while updating");
+            return;
+          }
           if (id(connected)) {
             ESP_LOGD("ble", "Turned manual slider ON");
             id(write_user_input)->execute({0xEC, 0x1D},{{0x01}, 0x00});
           }
     on_turn_off:
       - lambda: |-
+          if (id(is_updating)) {
+            ESP_LOGE("ble", "Ignored airsliderManualSwitch OFF command while updating");
+            return;
+          }
           if (id(connected)) { // when the entity is initialized, this function is triggered
             ESP_LOGD("ble", "Turned manual slider OFF");
             id(write_user_input)->execute({0xEC, 0x1D},{{0x00}, 0x00});
@@ -378,6 +418,10 @@ number:
     set_action:
       then:
         - lambda: |-
+            if (id(is_updating)) {
+              ESP_LOGE("ble", "Ignored AirSliderPercentage command while updating");
+              return;
+            }
             ESP_LOGD("ble", "Triggered airslider action");
             if (id(cAirSliderAutoManual).state) {
               id(write_user_input)->execute({0x62, 0x1E},{(uint8_t)x, 0x00});
@@ -500,17 +544,24 @@ sensor:
         }
       }
       id(last_data)=x;
-      if (id(is_polling_data)==false) {
-        if (id(is_writting_data)==true) {
-          ESP_LOGD("ble", "received while writing data (%d bytes): %s", x.size(), hex.c_str());
-          id(is_writting_data) = false;
-          return true;
-        }
+      if (x[3]==254) {
+        ESP_LOGD("ble", "received x[3]=%d for written data (%d bytes): %s",x[3], x.size(), hex.c_str());
+        id(is_writing) = false;
+        return true;
+      }
+      if (id(is_writing)==true) {
+        ESP_LOGD("ble", "received while writing data (%d bytes): %s", x.size(), hex.c_str());
+        id(is_writing) = false;
+        id(is_writing) = false;
+        return true;
+      }
+      if (id(is_polling)==false) {
         ESP_LOGE("ble", "received while not polling data[%d] (%d bytes): %s", id(current_batch), x.size(), hex.c_str());
         return true;
       }
       ESP_LOGD("ble", "RX data[%d] (%d bytes): %s", id(current_batch), x.size(), hex.c_str());
 
+      id(is_updating) = true;
       switch (id(current_batch)) {
         case 0:
           if (!id(powerIcon_update)) { // we ignore the first update after updating the value
@@ -594,8 +645,9 @@ sensor:
           return false;
           break;
       }
+      id(is_updating) = false;
 
-      id(is_polling_data) = false;
+      id(is_polling) = false;
 
       id(last_ble_read) = millis() / 1000;  // seconds
       ESP_LOGD("ble_watchdog", "Updated last BLE read: %u", id(last_ble_read));
